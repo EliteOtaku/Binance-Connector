@@ -557,7 +557,7 @@ func (s *Server) liveBars(w http.ResponseWriter, r *http.Request) {
 	for i, instrument := range instruments {
 		keys[i] = stream.Key{Market: instrument.Market, Kind: "bars", Symbol: instrument.Symbol, Period: period}
 	}
-	s.sse(w, r, keys, nil)
+	s.sse(w, r, keys, nil, true, 1)
 }
 
 // liveTrades 为 raw 和 aggregated 创建隔离的订阅及回放空间。
@@ -578,7 +578,7 @@ func (s *Server) liveTrades(w http.ResponseWriter, r *http.Request) {
 		failure(w, "INVALID_REQUEST", "kind 为 raw/aggregated", 400, 0)
 		return
 	}
-	s.sse(w, r, []stream.Key{{Market: market, Kind: keyKind, Symbol: symbol}}, nil)
+	s.sse(w, r, []stream.Key{{Market: market, Kind: keyKind, Symbol: symbol}}, nil, false, 0)
 }
 
 // liveDepth 订阅经过本地连续性校验的盘口快照与绝对量增量。
@@ -591,7 +591,7 @@ func (s *Server) liveDepth(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.sse(w, r, []stream.Key{{Market: market, Kind: "depth", Symbol: symbol}}, nil)
+	s.sse(w, r, []stream.Key{{Market: market, Kind: "depth", Symbol: symbol}}, nil, false, 0)
 }
 
 // entryMapper 把上游帧改写成下游协议帧；nil 表示原样透传。
@@ -599,7 +599,7 @@ type entryMapper func(stream.Entry) (stream.Entry, bool)
 
 // sse 把一个或多个 topic 合并到一条 SSE 连接。
 // 单流连接沿用 Last-Event-ID 续传；多流连接的游标无法用单个 ID 表达，改为重新快照。
-func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, mapper entryMapper) {
+func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, mapper entryMapper, live bool, snapshotSize int) {
 	if _, ok := w.(http.Flusher); !ok {
 		failure(w, "UNSUPPORTED_CAPABILITY", "HTTP Transport 不支持流式响应", 500, 0)
 		return
@@ -611,7 +611,7 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, 
 		}
 	}()
 	lastID := ""
-	if len(keys) == 1 {
+	if !live && len(keys) == 1 {
 		lastID = r.Header.Get("Last-Event-ID")
 	}
 	for _, key := range keys {
@@ -626,6 +626,7 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, 
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	control := http.NewResponseController(w)
+	var seq int64
 	write := func(entry stream.Entry) error {
 		if mapper != nil {
 			mapped, ok := mapper(entry)
@@ -635,21 +636,22 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, 
 			entry = mapped
 		}
 		_ = control.SetWriteDeadline(time.Now().Add(s.Settings.WriteTimeout))
-		if entry.ID != "" {
+		data := entry.Data
+		if live {
+			data = stampFrame(data, seq)
+			seq++
+		} else if entry.ID != "" {
 			if _, err := fmt.Fprintf(w, "id: %s\n", entry.ID); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", entry.Data); err != nil {
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
 			return err
 		}
 		return control.Flush()
 	}
 	_ = control.SetWriteDeadline(time.Now().Add(s.Settings.WriteTimeout))
-	if _, err := io.WriteString(w, "retry: 2000\n\n"); err != nil {
-		return
-	}
-	if err := control.Flush(); err != nil {
+	if err := writeHello(w, control, live, keys, snapshotSize, &seq); err != nil {
 		return
 	}
 	for _, sub := range subs {
@@ -683,7 +685,12 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, 
 			}
 		case <-timer.C:
 			_ = control.SetWriteDeadline(time.Now().Add(s.Settings.WriteTimeout))
-			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+			payload := ": keepalive\n\n"
+			if live {
+				payload = fmt.Sprintf("data: {\"type\":\"ping\",\"seq\":%d,\"ts\":%d}\n\n", seq, time.Now().UnixMilli())
+				seq++
+			}
+			if _, err := io.WriteString(w, payload); err != nil {
 				return
 			}
 			if err := control.Flush(); err != nil {
@@ -691,6 +698,58 @@ func (s *Server) sse(w http.ResponseWriter, r *http.Request, keys []stream.Key, 
 			}
 		}
 	}
+}
+
+// writeHello 只在 V1.1 流端点写连接级 hello；交易与盘口流保持原协议。
+func writeHello(
+	w io.Writer,
+	control *http.ResponseController,
+	live bool,
+	keys []stream.Key,
+	snapshotSize int,
+	seq *int64,
+) error {
+	if !live {
+		_ = control.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.WriteString(w, "retry: 2000\n\n"); err != nil {
+			return err
+		}
+		return control.Flush()
+	}
+	instruments := make([]string, 0, len(keys))
+	for _, key := range keys {
+		instruments = append(instruments, model.InstrumentID(key.Market, key.Symbol))
+	}
+	payload, err := json.Marshal(struct {
+		Type         string   `json:"type"`
+		Seq          int64    `json:"seq"`
+		Ts           int64    `json:"ts"`
+		Instruments  []string `json:"instruments"`
+		SnapshotSize int      `json:"snapshotSize"`
+	}{"hello", *seq, time.Now().UnixMilli(), instruments, snapshotSize})
+	if err != nil {
+		return err
+	}
+	*seq = *seq + 1
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+	return control.Flush()
+}
+
+// stampFrame 在流边界补齐连接级信封；帧内容由业务层生成，不在这里解释语义。
+func stampFrame(data []byte, seq int64) []byte {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return data
+	}
+	payload["seq"], _ = json.Marshal(seq)
+	payload["ts"], _ = json.Marshal(time.Now().UnixMilli())
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return data
+	}
+	return out
 }
 
 // archive 流式返回日聚合成交，只有终止 end.complete=true 表示完整读取成功。

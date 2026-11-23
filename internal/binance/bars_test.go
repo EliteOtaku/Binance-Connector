@@ -42,7 +42,7 @@ func TestCompleteKlinePayload(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Kline 未发布")
 	}
-	if frame.Type != "forming" || frame.Bar == nil || frame.Bar.Timestamp != 1672515780000 || frame.Bar.Low != 0.0015 || frame.Bar.Volume != 1000 || frame.Bar.Turnover != 1 {
+	if frame.Type != "bar" || frame.State != "forming" || frame.Bar == nil || frame.Bar.Timestamp != 1672515780000 || frame.Bar.Low != 0.0015 || frame.Bar.Volume != 1000 || frame.Bar.Turnover != 1 {
 		t.Fatalf("字段被同名大小写覆盖: %+v", frame.Bar)
 	}
 }

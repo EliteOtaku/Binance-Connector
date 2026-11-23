@@ -413,11 +413,12 @@ func publishBar(data []byte, key stream.Key, topic *stream.Topic) error {
 		values = append(values, n)
 	}
 	bar := model.Bar{Timestamp: event.K.Time, Open: values[0], High: values[1], Low: values[2], Close: values[3], Volume: values[4], Turnover: values[5]}
-	typeName := "forming"
+	state := "forming"
 	if event.K.Closed {
-		typeName = "closed"
+		state = "closed"
 	}
-	f := model.LiveBarsFrame(typeName, key.Market, key.Symbol)
+	f := model.LiveBarsFrame("bar", key.Market, key.Symbol)
+	f.State = state
 	f.Bar = &bar
 	bootstrap := model.LiveBarsFrame("snapshot", key.Market, key.Symbol)
 	bootstrap.Bars = []model.Bar{bar}

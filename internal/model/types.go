@@ -47,6 +47,7 @@ type Level [2]string
 // Frame 为 SSE 帧；盘口序号与 SSE 回放 ID 属于不同身份空间。
 type Frame struct {
 	Type           string  `json:"type"`
+	State          string  `json:"state,omitempty"`
 	SourceID       string  `json:"sourceId"`
 	Market         string  `json:"market"`
 	Symbol         string  `json:"symbol,omitempty"`
@@ -54,6 +55,7 @@ type Frame struct {
 	Timestamp      int64   `json:"timestamp,omitempty"`
 	Trades         []Trade `json:"trades,omitempty"`
 	Bar            *Bar    `json:"bar,omitempty"`
+	Quote          *Quote  `json:"quote,omitempty"`
 	Bars           []Bar   `json:"bars"`
 	Period         string  `json:"period,omitempty"`
 	BarAggregation string  `json:"barAggregation,omitempty"`
@@ -68,6 +70,13 @@ type Frame struct {
 	ToID           string  `json:"toId,omitempty"`
 	Funding        *Funding `json:"funding,omitempty"`
 	OpenInterest   *OpenInterest `json:"openInterest,omitempty"`
+}
+
+// Quote 是报价帧载荷；涨跌幅由消费端按昨收派生。
+type Quote struct {
+	Last      float64 `json:"last"`
+	PrevClose float64 `json:"prevClose"`
+	Timestamp int64   `json:"timestamp"`
 }
 
 // Funding 是永续资金费率快照；资金费率只属永续市场，现货帧不填充。

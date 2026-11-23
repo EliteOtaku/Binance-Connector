@@ -60,8 +60,8 @@ func assertQuote(t *testing.T, quote map[string]any, last, prevClose float64) {
 	if quote["type"] != "quote" || quote["instrumentId"] != quoteTestInstrument {
 		t.Fatalf("报价帧身份错误: %#v", quote)
 	}
-	if quote["last"] != last || quote["prevClose"] != prevClose {
-		t.Fatalf("报价 = last %v / prevClose %v，期望 %v / %v", quote["last"], quote["prevClose"], last, prevClose)
+	if quotePayload, ok := quote["quote"].(map[string]any); !ok || quotePayload["last"] != last || quotePayload["prevClose"] != prevClose {
+		t.Fatalf("报价载荷错误: %#v", quote)
 	}
 }
 

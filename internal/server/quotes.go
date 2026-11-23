@@ -103,12 +103,10 @@ func (p *quoteProjection) quote(instrumentID string) ([]byte, bool) {
 	}
 	p.emitted[instrumentID] = marker
 	data, err := json.Marshal(struct {
-		Type         string  `json:"type"`
-		InstrumentID string  `json:"instrumentId"`
-		Last         float64 `json:"last"`
-		PrevClose    float64 `json:"prevClose"`
-		Timestamp    int64   `json:"timestamp"`
-	}{"quote", instrumentID, last.Close, previous.Close, last.Timestamp})
+		Type         string      `json:"type"`
+		InstrumentID string      `json:"instrumentId"`
+		Quote        model.Quote `json:"quote"`
+	}{"quote", instrumentID, model.Quote{Last: last.Close, PrevClose: previous.Close, Timestamp: last.Timestamp}})
 	if err != nil {
 		return nil, false
 	}
@@ -138,7 +136,7 @@ func (s *Server) liveQuotes(w http.ResponseWriter, r *http.Request) {
 	for i, instrument := range instruments {
 		keys[i] = stream.Key{Market: instrument.Market, Kind: "bars", Symbol: instrument.Symbol, Period: "daily"}
 	}
-	s.sse(w, r, keys, newQuoteProjection(basis).mapEntry)
+	s.sse(w, r, keys, newQuoteProjection(basis).mapEntry, true, 0)
 }
 
 // quoteBasis 在连接建立前确认每个品种的今收与昨收；不足两根时显式失败，
