@@ -350,3 +350,47 @@ func TestSSETradeCatchup(t *testing.T) {
 		t.Fatalf("成交丢失、重复或乱序: %v; %v", ids, scanner.Err())
 	}
 }
+
+// TestBarsOlderDataOnShortPage 验证不满一页时声明历史耗尽：客户端据此收口，
+// 不再对同一游标反复回源。
+func TestBarsOlderDataOnShortPage(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/klines" {
+			http.NotFound(w, r)
+			return
+		}
+		// 上游只有两根：limit=2 是满页，limit=3 是短页。
+		_, _ = w.Write([]byte(`[[1794003000000,"1","2","0.5","1.5","10",1794003599999,"15",3,"6","9","0"],[1794003600000,"1","2","0.5","1.5","10",1794004199999,"15",3,"6","9","0"]]`))
+	}))
+	defer up.Close()
+	s := editMarket(apiSettings(t), model.MarketSpot, func(m *config.MarketSettings) {
+		m.REST = up.URL
+	})
+	api := New(binance.New(s), s)
+	defer api.Close()
+	for _, tc := range []struct {
+		limit int
+		older string
+	}{{2, "available"}, {3, "exhausted"}} {
+		t.Run(fmt.Sprintf("limit=%d", tc.limit), func(t *testing.T) {
+			body := fmt.Sprintf(`{"sourceId":"binance","instrument":{"id":"binance:spot:BTCUSDT","symbol":"BTCUSDT"},"period":"15min","adjustment":"none","barAggregation":"original","limit":%d}`, tc.limit)
+			w := httptest.NewRecorder()
+			api.ServeHTTP(w, httptest.NewRequest("POST", prefix+"/bars", strings.NewReader(body)))
+			if w.Code != 200 {
+				t.Fatalf("状态: %d %s", w.Code, w.Body.String())
+			}
+			var out struct {
+				Data struct {
+					OlderData string            `json:"olderData"`
+					Items     []json.RawMessage `json:"items"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+				t.Fatal(err)
+			}
+			if out.Data.OlderData != tc.older || len(out.Data.Items) != 2 {
+				t.Fatalf("olderData=%s items=%d 期望 %s/2", out.Data.OlderData, len(out.Data.Items), tc.older)
+			}
+		})
+	}
+}

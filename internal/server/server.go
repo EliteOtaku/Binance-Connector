@@ -340,8 +340,10 @@ func (s *Server) bars(w http.ResponseWriter, r *http.Request) {
 		upstream(w, err)
 		return
 	}
-	older := "unknown"
-	if len(items) == 0 {
+	// 一页不足 limit 根说明更早的历史已经没有了：声明 exhausted，客户端才能停止翻页。
+	// 满页表示上游还有更早数据；真正无法判断的情形由 error 分支处理，不在这里猜 unknown。
+	older := "available"
+	if len(items) < body.Limit {
 		older = "exhausted"
 	}
 	success(w, map[string]any{"instrumentId": body.Instrument.ID, "market": market, "period": body.Period, "adjustment": "none", "barAggregation": "original", "timezone": "UTC", "volumeUnit": "baseAsset", "items": items, "olderData": older})
